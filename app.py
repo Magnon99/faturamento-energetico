@@ -5,6 +5,9 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os, shutil, subprocess
+from src.faturamento.formatacao import RS, latex_num
+from src.faturamento.perfis import _center_in_window, _fmt_h, default_profile, hour_overlap, hour_overlap_frac
+from src.faturamento.tarifas import PRESETS
 
 # ====================================================
 #  Industriais II — EMS A4 (v3.7H‑rev10)
@@ -20,22 +23,6 @@ st.set_page_config(page_title="Industriais II - EMS A4 (v3.7H‑rev10)", page_ic
 st.markdown("### ⚡ Industriais II — Calculadora de Faturamento (EMS) — v3.7H‑rev10")
 st.caption("Desenvolvido por **Magnon R.** e **Assistente**")
 st.caption("A4 — Demais Classes. Modalidades: **Verde**, **Azul (DC único)**, **Azul — 2 Contratos**. Regras: REN 1000 + NDU 002 (EMS).")
-
-# ---------- Presets de tarifas ----------
-PRESETS = {
-    "EMS Atual (base)": {
-        "Azul":  {"TE_P":0.57619, "TE_FP":0.39961, "TD_P":69.16, "TD_FP":34.69, "UL_P":138.32, "UL_FP":69.38, "VR_DRE":34.69, "VR_ERE":0.28602},
-        "Azul2": {"TE_P":0.57619, "TE_FP":0.39961, "TD_P":69.16, "TD_FP":34.69, "UL_P":138.32, "UL_FP":69.38, "VR_DRE":34.69, "VR_ERE":0.28602},
-        "Verde": {"TE_P":2.25614, "TE_FP":0.39961, "TD_P":0.00,  "TD_FP":34.69, "UL_P":0.00,   "UL_FP":69.38, "VR_DRE":34.69, "VR_ERE":0.28602}
-    }
-}
-
-
-def RS(x):
-    try:
-        return f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
-        return str(x)
 
 # ---------- Sidebar ----------
 with st.sidebar:
@@ -131,53 +118,6 @@ with st.sidebar:
                                 help="Se 'Desprezar impostos' estiver marcado acima, este é ignorado.")
 
 # ---------- Helpers ----------
-def _center_in_window(h_float, start, end):
-    """Retorna True se o centro da hora (h+0.5) estiver na janela [start,end). Suporta janelas com .5 e cruzando meia-noite."""
-    c = float(h_float) + 0.5
-    s = float(start); e = float(end)
-    if s < e:
-        return (c >= s) and (c < e)
-    else:
-        # janela cruza 24h
-        return (c >= s) or (c < e)
-
-def _fmt_h(h):
-    return f"{int(h)}:30" if abs(h - int(h) - 0.5) < 1e-9 else f"{int(h)}:00"
-
-def default_profile(ps, pe, for_fds=False):
-    hrs = np.arange(24); labels = [f"{h}-{h+1}" for h in hrs]
-    kW = [35.8] + [40.0]*5 + [110.0]*6 + [150.0]*5 + [160.0]*3 + [110.0]*4
-    FP = [0.8]*6 + [0.7]*6 + [0.8]*5 + [0.9,1.0,0.9] + [0.7]*4
-    TIPO = ["Indutivo"]*24
-    posto = ["FP"]*24 if for_fds else ["P" if (h>=ps and h<pe) else "FP" for h in hrs]
-    return pd.DataFrame({"Hora":labels,"H":hrs,"kW":kW,"FP":FP,"Tipo_FP":TIPO,"Posto":posto})
-
-def hour_overlap(start, dur, h):
-    end = (start + dur) % 24
-    if dur >= 24: return True
-    return (start <= h < end) if start < end else (h >= start or h < end)
-
-
-def hour_overlap_frac(start, dur, h):
-    """
-    Fração de sobreposição entre a janela [start, start+dur) (em horas, podendo ter .5)
-    e a hora inteira [h, h+1). Retorna valor entre 0 e 1.
-    """
-    if dur <= 0:
-        return 0.0
-    start = float(start) % 24.0
-    dur = float(dur)
-    end = start + dur
-    # Função auxiliar: comprimento da interseção
-    def overlap(a1, a2, b1, b2):
-        lo = max(a1, b1); hi = min(a2, b2)
-        return max(0.0, hi - lo)
-    # Sem volta de dia
-    if end <= 24.0:
-        ol = overlap(start, end, h, h+1)
-    else:
-        ol = overlap(start, 24.0, h, h+1) + overlap(0.0, end-24.0, h, h+1)
-    return max(0.0, min(1.0, ol))
 def monthly_energy(perf_u, perf_f, du, df):
     kwh_day_p_u  = perf_u.loc[perf_u["Posto"]=="P","kW"].sum()
     kwh_day_fp_u = perf_u.loc[perf_u["Posto"]=="FP","kW"].sum()
@@ -268,11 +208,6 @@ def plot_barras(df, titulo, dc_lines=None):
     the_table.auto_set_font_size(False); the_table.set_fontsize(6.5); the_table.scale(1, 1.2)
     plt.subplots_adjust(left=0.05, right=0.995, top=0.88, bottom=0.28)
     return fig
-
-def latex_num(x):
-    if isinstance(x, (int, np.integer)): return f"{int(x)}"
-    try: return f"{float(x):.5f}".rstrip('0').rstrip('.')
-    except: return str(x)
 
 # ---------- Formulário com tabelas ----------
 with st.form("form_tabelas"):
