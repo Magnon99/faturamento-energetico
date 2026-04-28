@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os, shutil, subprocess
+from src.faturamento.calculos import dm_measured, monthly_energy
 from src.faturamento.formatacao import RS, latex_num
 from src.faturamento.perfis import _center_in_window, _fmt_h, default_profile, hour_overlap, hour_overlap_frac
 from src.faturamento.tarifas import PRESETS
@@ -118,19 +119,6 @@ with st.sidebar:
                                 help="Se 'Desprezar impostos' estiver marcado acima, este é ignorado.")
 
 # ---------- Helpers ----------
-def monthly_energy(perf_u, perf_f, du, df):
-    kwh_day_p_u  = perf_u.loc[perf_u["Posto"]=="P","kW"].sum()
-    kwh_day_fp_u = perf_u.loc[perf_u["Posto"]=="FP","kW"].sum()
-    kwh_day_f_f  = perf_f["kW"].sum()
-    return kwh_day_p_u * du, kwh_day_fp_u * du + kwh_day_f_f * df
-
-def dm_measured(perf_u, perf_f):
-    dm_p  = perf_u.loc[perf_u["Posto"]=="P","kW"].max() if (perf_u["Posto"]=="P").any() else 0.0
-    dm_fp = max(perf_u.loc[perf_u["Posto"]=="FP","kW"].max() if (perf_u["Posto"]=="FP").any() else 0.0, perf_f["kW"].max())
-    dm_g  = max(perf_u["kW"].max(), perf_f["kW"].max())
-    return dm_p or 0.0, dm_fp or 0.0, dm_g or 0.0
-
-
 def ere_calc(perfil_u, perfil_f, du, df, vr_ere, capacit_on_flag, isentar_ind_0_6, cap_start, cap_dur, perdas_factor=1.0):
     def ere_unit(row):
         kw, fpv, tipo, h = row["kW"], row["FP"], row["Tipo_FP"], int(row["H"])
