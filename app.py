@@ -7,29 +7,29 @@ import matplotlib.pyplot as plt
 import os, shutil, subprocess
 from src.faturamento.calculos import dm_measured, dre_calc, ere_calc, monthly_energy
 from src.faturamento.formatacao import RS, latex_num
-from src.faturamento.perfis import _center_in_window, _fmt_h, default_profile, hour_overlap, hour_overlap_frac
+from src.faturamento.perfis import _center_in_window, _fmt_h, apply_interval_values, copy_profile_values, default_profile, empty_profile, hour_overlap, hour_overlap_frac
 from src.faturamento.tarifas import TARIFAS, get_tarifas
 
 # ====================================================
-#  Industriais II — EMS A4 (v3.7H‑rev10)
+#  Aplicação de Faturamento de Energia Elétrica
 #  - REN 1000 + NDU 002 (EMS)
 #  - Ultrapassagem: seletor Franquia vs Degrau
-#  - Presets de tarifas (EMS atual / Prova do Professor)
-#  - "Modo Prova": checkboxes com dicas do que ativar para cada item
+#  - Seleção tarifária por vigência, subgrupo e classe
+#  - Componentes do faturamento configuráveis
 #  - Botão Calcular (nada reativa até submeter)
 #  - Relatório LaTeX/PDF com números
 # ====================================================
 
-st.set_page_config(page_title="Industriais II - EMS A4 (v3.7H‑rev10)", page_icon="⚡", layout="wide")
-st.markdown("### ⚡ Industriais II — Calculadora de Faturamento (EMS) — v3.7H‑rev10")
-st.caption("Desenvolvido por **Magnon R.** e **Assistente**")
-st.caption("A4 — Demais Classes. Modalidades: **Verde**, **Azul (DC único)**, **Azul — 2 Contratos**. Regras: REN 1000 + NDU 002 (EMS).")
+st.set_page_config(page_title="Faturamento de Energia Elétrica", page_icon="⚡", layout="wide")
+st.markdown("### ⚡ Aplicação de Faturamento de Energia Elétrica")
+st.caption("Desenvolvido por **Magnon Rychard Alexandre Silva de Faria**")
+st.caption("Configuração tarifária baseada na estrutura EMS, com suporte a modalidade, subgrupo, classe e vigência. Regras: REN 1000 + NDU 002 (EMS).")
 
 # ---------- Sidebar ----------
 with st.sidebar:
     st.subheader("⚙️ Parâmetros gerais")
     modalidade = st.selectbox("Modalidade", ["Verde", "Azul (DC único)", "Azul — 2 Contratos"], index=0,
-                              help="Escolha a modalidade pedida no item da prova.")
+                              help="Selecione a modalidade tarifária aplicável ao estudo.")
     modalidade_tarifaria = "Verde" if modalidade == "Verde" else "Azul"
 
     vigencias_disponiveis = list(TARIFAS["EMS"]["vigencias"].keys())
@@ -65,7 +65,7 @@ with st.sidebar:
     if modalidade_tarifaria == "Verde":
         st.caption("Para a modalidade Verde nesta vigência, os subgrupos tarifários disponíveis na base atual são os compatíveis cadastrados.")
 
-    ponta_start = st.number_input("Início da Ponta (h, aceita .5)", 0.0, 23.5, 17.0, step=0.5, help="Para a prova: 17h30–20h30 → use 17.5 e 20.5.")
+    ponta_start = st.number_input("Início da Ponta (h, aceita .5)", 0.0, 23.5, 17.0, step=0.5, help="Exemplo: 17h30–20h30 corresponde a 17.5 e 20.5.")
     ponta_end   = st.number_input("Fim da Ponta (h, aceita .5)", 1.0, 24.0, 20.0, step=0.5, help="Ex.: 20.5 significa centro até 20:30.")
     dias_uteis  = st.number_input("Dias Úteis do mês", 0, 27, 22)
     dias_fds    = st.number_input("Dias FDS/Feriados do mês", 0, 10, 8)
@@ -79,7 +79,7 @@ with st.sidebar:
     cap_start  = st.number_input("Início janela capacitiva (h, aceita .5)", 0.0, 23.5, 0.0, step=0.5)
     cap_dur    = st.number_input("Duração janela capacitiva (h)", 0.5, 24.0, 6.0, step=0.5)
     isentar_ind_0_6 = st.checkbox("Isentar reativo INDUTIVO de 00–06h", value=False,
-                                  help="Na correção do professor eles costumam não cobrar indutivo 0–6h.")
+                                  help="Ative se o critério adotado para o estudo considerar isenção do indutivo entre 00h e 06h.")
     medir_sec = st.checkbox("Medição no secundário (<69 kV)? aplicar 2,5% nas quantidades de ERE/DRE", value=False,
                              help="REN 1000 Art. 305: quando a medição é no secundário, aplica-se 2,5% às quantidades medidas (ERE/DRE).")
     perdas_factor = 1.025 if medir_sec else 1.0
@@ -100,7 +100,7 @@ with st.sidebar:
     ultra_mode = st.radio("Regra da tolerância (Ultrapassagem)",
                           ["Franquia (DM − DC×(1+τ))", "Degrau (se passou: DM − DC)"],
                           index=0,
-                          help="⚠️ O professor costuma usar **Degrau** (passou → DM−DC). Franquia reduz a multa ao descontar a tolerância.")
+                          help="Selecione a metodologia de aplicação da tolerância para a ultrapassagem.")
 
     st.markdown("---")
     st.write("**GMG / Simulações**")
@@ -136,25 +136,31 @@ with st.sidebar:
     ul_p   = st.number_input("Ultrapassagem — PONTA (R$/kW)", 0.0, 1000.0, preset_vals["UL_P"], step=0.01)
     ul_fp  = st.number_input("Ultrapassagem — FORA/Verde (R$/kW)", 0.0, 1000.0, preset_vals["UL_FP"], step=0.01)
     vr_dre = st.number_input("VR_DRE — R$/kW (Demanda Reativa Excedente)", 0.0, 1000.0, preset_vals["VR_DRE"], step=0.01,
-                          help="Na prova, ele usa o valor da demanda de FP como VR_DRE.")
+                          help="Valor de referência para cálculo da Demanda Reativa Excedente (DRE).")
     vr_ere = st.number_input("VR_ERE — R$/kWh (Energia Reativa Excedente)", 0.0, 10.0, preset_vals["VR_ERE"], step=0.00001)
     bdv    = st.number_input("BDV (R$/kWh)", 0.0, 2.0, 0.0, step=0.00001, format="%.5f",
                          help="Benefício de Desenvolvimento (se houver) aplicado sobre a energia total.")
 
     st.divider()
-    st.markdown("**Modo Prova — o que calcular?**")
-    calc_dem_ener = st.checkbox("Calcular **Demanda e Energia** (itens a, c)", value=True,
-                                help="Deixe ligado para os itens de faturamento sem multas.")
+    st.markdown("**Componentes do Faturamento**")
+    calc_dem_ener = st.checkbox("Incluir **Demanda e Energia**", value=True,
+                                help="Mantém os componentes principais de demanda faturada e consumo de energia.")
     calc_ultra    = st.checkbox("Calcular **Ultrapassagem** (quando houver) — usa regra acima", value=True,
-                                help="Se a questão não pedir, desligue.")
-    calc_ere      = st.checkbox("Calcular **ERE** (multa por baixo/alto FP) (itens b, d)", value=True,
-                                help="Se a questão despreza excedente reativo, desligue.")
+                                help="Inclui a cobrança de ultrapassagem conforme a regra selecionada acima.")
+    calc_ere      = st.checkbox("Calcular **ERE** (Energia Reativa Excedente)", value=True,
+                                help="Inclui a cobrança de Energia Reativa Excedente quando aplicável.")
     calc_dre      = st.checkbox("Calcular **DRE** (Demanda Reativa Excedente)", value=True,
-                                help="Nos gabaritos ele usa VR_DRE=Demanda_FP. Desligue se não pedir.")
-    calc_impostos = st.checkbox("Aplicar **impostos** (gross-up) (item g)", value=True,
-                                help="Se 'Desprezar impostos' estiver marcado acima, este é ignorado.")
+                                help="Inclui a cobrança de Demanda Reativa Excedente quando aplicável.")
+    calc_impostos = st.checkbox("Aplicar **impostos** (gross-up)", value=True,
+                                help="Se 'Desprezar impostos' estiver marcado acima, esta opção é ignorada.")
 
 # ---------- Helpers ----------
+def _make_initial_profile(ps, pe, perfil_inicial, for_fds=False):
+    if perfil_inicial == "Zerado":
+        return empty_profile(ps, pe, for_fds=for_fds)
+    return default_profile(ps, pe, for_fds=for_fds)
+
+
 def plot_barras(df, titulo, dc_lines=None):
     fig, ax = plt.subplots(figsize=(10.2,4.6))
     x = np.arange(24); ax.bar(x, df["kW"]); ax.set_xlim(-0.5, 23.5)
@@ -174,11 +180,57 @@ def plot_barras(df, titulo, dc_lines=None):
     return fig
 
 # ---------- Formulário com tabelas ----------
+st.markdown("#### Configuração dos Perfis")
+perfil_inicial = st.radio("Perfil inicial", ["Zerado", "Padrão"], index=1,
+                          help="Escolha se as tabelas devem iniciar zeradas ou com o perfil padrão do app.")
+
+perfil_editor_signature = (perfil_mode, perfil_inicial, ponta_start, ponta_end)
+if st.session_state.get("perfil_editor_signature") != perfil_editor_signature:
+    if perfil_mode == "Único (todo mês)":
+        st.session_state.perfil_all = _make_initial_profile(ponta_start, ponta_end, perfil_inicial, for_fds=False)
+        st.session_state.pop("perfil_u_edit", None)
+        st.session_state.pop("perfil_f_edit", None)
+    else:
+        st.session_state.perfil_u_edit = _make_initial_profile(ponta_start, ponta_end, perfil_inicial, for_fds=False)
+        st.session_state.perfil_f_edit = _make_initial_profile(ponta_start, ponta_end, perfil_inicial, for_fds=True)
+        st.session_state.pop("perfil_all", None)
+    st.session_state.perfil_editor_signature = perfil_editor_signature
+
 with st.form("form_tabelas"):
+    st.markdown("#### Preenchimento por Intervalo")
+    c_fill_1, c_fill_2, c_fill_3 = st.columns(3)
+    with c_fill_1:
+        if perfil_mode == "Único (todo mês)":
+            destino_intervalo = "Perfil Único"
+            st.caption("Aplicação em lote no perfil exibido.")
+        else:
+            destino_intervalo = st.selectbox("Aplicar em", ["Dias Úteis", "FDS / Feriados"], index=0)
+    with c_fill_2:
+        hora_inicial_lote = st.number_input("Hora inicial", 0, 23, 0, step=1)
+        hora_final_lote = st.number_input("Hora final (inclusiva)", 0, 23, 23, step=1)
+    with c_fill_3:
+        kw_lote = st.number_input("kW do intervalo", 0.0, 100000.0, 0.0, step=1.0)
+        fp_lote = st.number_input("FP do intervalo", 0.0, 1.0, 0.92, step=0.01, format="%.2f")
+        tipo_fp_lote = st.selectbox("Tipo_FP do intervalo", ["Indutivo", "Capacitivo", "Neutro"], index=2)
+
+    c_action_1, c_action_2, c_action_3, c_action_4 = st.columns(4)
+    with c_action_1:
+        aplicar_lote = st.form_submit_button("Aplicar intervalo")
+    if perfil_mode == "Separados (Úteis x FDS)":
+        with c_action_2:
+            copiar_u_f = st.form_submit_button("Copiar Úteis -> FDS")
+        with c_action_3:
+            copiar_f_u = st.form_submit_button("Copiar FDS -> Úteis")
+    else:
+        copiar_u_f = False
+        copiar_f_u = False
+    with c_action_4:
+        calc = st.form_submit_button("🚀 Calcular")
+
     if perfil_mode == "Único (todo mês)":
         st.markdown("#### Perfil de Carga — **Único** (vale para úteis e FDS)")
         if "perfil_all" not in st.session_state:
-            st.session_state.perfil_all = default_profile(ponta_start, ponta_end, for_fds=False)
+            st.session_state.perfil_all = _make_initial_profile(ponta_start, ponta_end, perfil_inicial, for_fds=False)
         perfil_all = st.data_editor(st.session_state.perfil_all, num_rows="fixed", use_container_width=True, hide_index=True,
                                     key="editor_all",
                                     column_config={
@@ -188,7 +240,7 @@ with st.form("form_tabelas"):
     else:
         st.markdown("#### Perfil — **Dias Úteis**")
         if "perfil_u_edit" not in st.session_state:
-            st.session_state.perfil_u_edit = default_profile(ponta_start, ponta_end, for_fds=False)
+            st.session_state.perfil_u_edit = _make_initial_profile(ponta_start, ponta_end, perfil_inicial, for_fds=False)
         perfil_u_edit = st.data_editor(st.session_state.perfil_u_edit, num_rows="fixed", use_container_width=True, hide_index=True,
                                        key="editor_u",
                                        column_config={
@@ -197,14 +249,55 @@ with st.form("form_tabelas"):
                                        })
         st.markdown("#### Perfil — **FDS / Feriados** (sempre fora de ponta)")
         if "perfil_f_edit" not in st.session_state:
-            st.session_state.perfil_f_edit = default_profile(ponta_start, ponta_end, for_fds=True)
+            st.session_state.perfil_f_edit = _make_initial_profile(ponta_start, ponta_end, perfil_inicial, for_fds=True)
         perfil_f_edit = st.data_editor(st.session_state.perfil_f_edit, num_rows="fixed", use_container_width=True, hide_index=True,
                                        key="editor_f",
                                        column_config={"Tipo_FP": st.column_config.SelectboxColumn(options=["Indutivo","Capacitivo","Neutro"])})
 
-    calc = st.form_submit_button("🚀 Calcular")
-
 if "calc_done" not in st.session_state: st.session_state.calc_done = False
+if aplicar_lote:
+    if perfil_mode == "Único (todo mês)":
+        st.session_state.perfil_all = apply_interval_values(
+            perfil_all.copy(),
+            hora_inicial_lote,
+            hora_final_lote,
+            kw=kw_lote,
+            fp=fp_lote,
+            tipo_fp=tipo_fp_lote,
+        )
+    else:
+        st.session_state.perfil_u_edit = perfil_u_edit.copy()
+        st.session_state.perfil_f_edit = perfil_f_edit.copy()
+        if destino_intervalo == "Dias Úteis":
+            st.session_state.perfil_u_edit = apply_interval_values(
+                st.session_state.perfil_u_edit,
+                hora_inicial_lote,
+                hora_final_lote,
+                kw=kw_lote,
+                fp=fp_lote,
+                tipo_fp=tipo_fp_lote,
+            )
+        else:
+            st.session_state.perfil_f_edit = apply_interval_values(
+                st.session_state.perfil_f_edit,
+                hora_inicial_lote,
+                hora_final_lote,
+                kw=kw_lote,
+                fp=fp_lote,
+                tipo_fp=tipo_fp_lote,
+            )
+    st.rerun()
+
+if copiar_u_f:
+    st.session_state.perfil_u_edit = perfil_u_edit.copy()
+    st.session_state.perfil_f_edit = copy_profile_values(perfil_u_edit.copy(), perfil_f_edit.copy())
+    st.rerun()
+
+if copiar_f_u:
+    st.session_state.perfil_f_edit = perfil_f_edit.copy()
+    st.session_state.perfil_u_edit = copy_profile_values(perfil_f_edit.copy(), perfil_u_edit.copy())
+    st.rerun()
+
 if calc:
     if perfil_mode == "Único (todo mês)":
         df = perfil_all.copy()
@@ -223,9 +316,8 @@ if st.session_state.calc_done:
     perfil_u = st.session_state.perfil_u.copy()
     perfil_f = st.session_state.perfil_f.copy()
 else:
-    hrs = np.arange(24)
-    perfil_u = pd.DataFrame({"Hora":[f"{h}-{h+1}" for h in hrs], "H":hrs, "kW":[0.0]*24, "FP":[0.0]*24, "Tipo_FP":["Neutro"]*24, "Posto":["FP"]*24})
-    perfil_f = perfil_u.copy()
+    perfil_u = _make_initial_profile(ponta_start, ponta_end, perfil_inicial, for_fds=False)
+    perfil_f = _make_initial_profile(ponta_start, ponta_end, perfil_inicial, for_fds=True)
 
 st.info(f"**Modalidade:** {modalidade} — Ponta **{_fmt_h(ponta_start)}–{_fmt_h(ponta_end)}** (úteis). FDS = sempre FP. Perfis: **{perfil_mode}**.")
 
@@ -374,7 +466,7 @@ if st.session_state.calc_done:
 if st.session_state.calc_done:
     with st.expander("🔍 Passo-a-passo — ERE (mostra blocos positivos)"):
         if calc_ere:
-            st.markdown("Só aparecem as horas com contribuição positiva. Se 'Isentar 00–06h indutivo' estiver ligado, essas horas são ignoradas.")
+            st.markdown("Só aparecem as horas com contribuição positiva. Se a isenção do indutivo entre 00h e 06h estiver ativa, essas horas são desconsideradas.")
             dfu = st.session_state.perfil_u.copy(); dfu["ERE_h"]=ere_u_h; dfu=dfu[dfu["ERE_h"]>0]
             for _,r in dfu.iterrows():
                 st.latex(rf"1\,h\times[{latex_num(r['kW'])}\cdot(\frac{{0.92}}{{{latex_num(r['FP'])}}}-1)]\times {latex_num(dias_uteis)} = {latex_num(r['ERE_h']*dias_uteis)}")
@@ -383,7 +475,7 @@ if st.session_state.calc_done:
                 st.latex(rf"1\,h\times[{latex_num(r['kW'])}\cdot(\frac{{0.92}}{{{latex_num(r['FP'])}}}-1)]\times {latex_num(dias_fds)} = {latex_num(r['ERE_h']*dias_fds)}")
             st.markdown(f"**Total mês (kVArh eq):** `{ere_kwh:.3f}` — **Valor ERE:** {RS(c_ere)}")
         else:
-            st.info("ERE desligado nas opções.")
+            st.info("ERE desabilitado nas opções da interface.")
 
     with st.expander("🔍 Passo-a-passo — DRE (kW ajustado 0,92)"):
         if calc_dre:
@@ -393,7 +485,7 @@ if st.session_state.calc_done:
             else:
                 st.latex(rf"P^{{adj}}_{{\max}}={latex_num(max_v_adj)},\ DAF={latex_num(daf_v)} \Rightarrow \text{{exc}}={latex_num(max(0,max_v_adj-daf_v))}")
         else:
-            st.info("DRE desligado nas opções.")
+            st.info("DRE desabilitado nas opções da interface.")
 
     with st.expander("🔍 Passo-a-passo — Ultrapassagem / Energia / Impostos"):
         if modalidade.startswith("Azul"):
@@ -414,7 +506,7 @@ if st.session_state.calc_done:
         elif ignorar_tributos:
             st.markdown("**Impostos desprezados** → Conta = Subtotal.")
         else:
-            st.markdown("Impostos desligados nas opções.")
+            st.markdown("Impostos desabilitados nas opções da interface.")
 
 # ---------- Exportar LaTeX/PDF ----------
 def gerar_latex(tex_path):
@@ -423,7 +515,7 @@ def gerar_latex(tex_path):
         try: return f"{float(x):.5f}".rstrip('0').rstrip('.')
         except: return str(x)
     doc  = r"\documentclass[11pt]{article}\usepackage{amsmath, amssymb, geometry, booktabs}\geometry{margin=1.8cm}\begin{document}"
-    doc += r"\section*{Relatório de Cálculo (EMS A4)}"
+    doc += r"\section*{Relatório de Cálculo}"
     doc += f"\nModalidade: {modalidade}. Ponta: {ponta_start}-{ponta_end}h. Úteis={dias_uteis}, FDS={dias_fds}.\\\\\n"
     if modalidade=="Verde":   doc += f"DC: {num(dc_v)} kW.\\\\\n"
     elif modalidade=="Azul (DC único)": doc += f"DC (P/FP): {num(dc_p)} kW.\\\\\n"

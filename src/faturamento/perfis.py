@@ -18,6 +18,13 @@ def _fmt_h(h):
     return f"{int(h)}:30" if abs(h - int(h) - 0.5) < 1e-9 else f"{int(h)}:00"
 
 
+def empty_profile(ps, pe, for_fds=False):
+    hrs = np.arange(24)
+    labels = [f"{h}-{h+1}" for h in hrs]
+    posto = ["FP"] * 24 if for_fds else ["P" if (h >= ps and h < pe) else "FP" for h in hrs]
+    return pd.DataFrame({"Hora": labels, "H": hrs, "kW": [0.0] * 24, "FP": [0.0] * 24, "Tipo_FP": ["Neutro"] * 24, "Posto": posto})
+
+
 def default_profile(ps, pe, for_fds=False):
     hrs = np.arange(24)
     labels = [f"{h}-{h+1}" for h in hrs]
@@ -26,6 +33,31 @@ def default_profile(ps, pe, for_fds=False):
     TIPO = ["Indutivo"] * 24
     posto = ["FP"] * 24 if for_fds else ["P" if (h >= ps and h < pe) else "FP" for h in hrs]
     return pd.DataFrame({"Hora": labels, "H": hrs, "kW": kW, "FP": FP, "Tipo_FP": TIPO, "Posto": posto})
+
+
+def apply_interval_values(df, hora_inicial, hora_final, kw=None, fp=None, tipo_fp=None):
+    out = df.copy()
+    hora_inicial = int(hora_inicial)
+    hora_final = int(hora_final)
+    if hora_inicial <= hora_final:
+        mask = (out["H"] >= hora_inicial) & (out["H"] <= hora_final)
+    else:
+        mask = (out["H"] >= hora_inicial) | (out["H"] <= hora_final)
+    if kw is not None:
+        out.loc[mask, "kW"] = float(kw)
+    if fp is not None:
+        out.loc[mask, "FP"] = float(fp)
+    if tipo_fp is not None:
+        out.loc[mask, "Tipo_FP"] = tipo_fp
+    return out
+
+
+def copy_profile_values(source_df, target_df):
+    out = target_df.copy()
+    out["kW"] = source_df["kW"].tolist()
+    out["FP"] = source_df["FP"].tolist()
+    out["Tipo_FP"] = source_df["Tipo_FP"].tolist()
+    return out
 
 
 def hour_overlap(start, dur, h):
