@@ -8,7 +8,7 @@ import os, shutil, subprocess
 from src.faturamento.calculos import dm_measured, dre_calc, ere_calc, monthly_energy
 from src.faturamento.formatacao import RS, latex_num
 from src.faturamento.perfis import _center_in_window, _fmt_h, default_profile, hour_overlap, hour_overlap_frac
-from src.faturamento.tarifas import PRESETS
+from src.faturamento.tarifas import TARIFAS, get_tarifas
 
 # ====================================================
 #  Industriais II — EMS A4 (v3.7H‑rev10)
@@ -28,10 +28,43 @@ st.caption("A4 — Demais Classes. Modalidades: **Verde**, **Azul (DC único)**,
 # ---------- Sidebar ----------
 with st.sidebar:
     st.subheader("⚙️ Parâmetros gerais")
-    preset = st.selectbox("Preset de Tarifas", list(PRESETS.keys()), index=0, help="Troca todos os valores padrão de tarifas/valores de referência de ERE/DRE.")
-
     modalidade = st.selectbox("Modalidade", ["Verde", "Azul (DC único)", "Azul — 2 Contratos"], index=0,
                               help="Escolha a modalidade pedida no item da prova.")
+    modalidade_tarifaria = "Verde" if modalidade == "Verde" else "Azul"
+
+    vigencias_disponiveis = list(TARIFAS["EMS"]["vigencias"].keys())
+    vigencia_default = "2025-04-08"
+    vigencia = st.selectbox(
+        "Vigência tarifária",
+        vigencias_disponiveis,
+        index=(vigencias_disponiveis.index(vigencia_default) if vigencia_default in vigencias_disponiveis else 0),
+        help="Selecione a vigência da tabela tarifária da EMS.",
+    )
+    vigencia_data = TARIFAS["EMS"]["vigencias"][vigencia]
+
+    subgrupos_modalidade = vigencia_data["grupo_a"][modalidade_tarifaria]
+    ordem_subgrupos = ["A2", "A3", "A3a", "A4"]
+    subgrupos_disponiveis = [sg for sg in ordem_subgrupos if sg in subgrupos_modalidade]
+    subgrupo_default = "A4"
+    subgrupo = st.selectbox(
+        "Subgrupo do Grupo A",
+        subgrupos_disponiveis,
+        index=(subgrupos_disponiveis.index(subgrupo_default) if subgrupo_default in subgrupos_disponiveis else 0),
+        format_func=lambda sg: f"{sg} — {subgrupos_modalidade[sg]['label']}",
+        help="Selecione o subgrupo tarifário para carregar os valores padrão da EMS.",
+    )
+
+    classes_disponiveis = list(subgrupos_modalidade[subgrupo]["classes"].keys())
+    classe_default = "Demais Classes"
+    classe = st.selectbox(
+        "Classe",
+        classes_disponiveis,
+        index=(classes_disponiveis.index(classe_default) if classe_default in classes_disponiveis else 0),
+        help="Selecione a classe tarifária para carregar os valores padrão da EMS.",
+    )
+    if modalidade_tarifaria == "Verde":
+        st.caption("Para a modalidade Verde nesta vigência, os subgrupos tarifários disponíveis na base atual são os compatíveis cadastrados.")
+
     ponta_start = st.number_input("Início da Ponta (h, aceita .5)", 0.0, 23.5, 17.0, step=0.5, help="Para a prova: 17h30–20h30 → use 17.5 e 20.5.")
     ponta_end   = st.number_input("Fim da Ponta (h, aceita .5)", 1.0, 24.0, 20.0, step=0.5, help="Ex.: 20.5 significa centro até 20:30.")
     dias_uteis  = st.number_input("Dias Úteis do mês", 0, 27, 22)
@@ -54,14 +87,11 @@ with st.sidebar:
     if modalidade == "Azul (DC único)":
         dc_single = st.number_input("DC (kW) — vale para PONTA e FORA", 0.0, 100000.0, 130.0, step=1.0)
         dc_p, dc_fp = dc_single, dc_single
-        tarifa_key = "Azul"
     elif modalidade == "Azul — 2 Contratos":
         dc_p = st.number_input("DC PONTA (kW)", 0.0, 100000.0, 150.0, step=1.0)
         dc_fp = st.number_input("DC FORA (kW)", 0.0, 100000.0, 120.0, step=1.0)
-        tarifa_key = "Azul2"
     else:
         dc_v = st.number_input("Demanda Contratada (kW) — Verde", 0.0, 100000.0, 130.0, step=1.0)
-        tarifa_key = "Verde"
 
     aplica_tol = st.checkbox("Aplicar tolerância na ULTRAPASSAGEM [DC × (1 + tolerância)]", value=False,
                              help="Ative se a questão especificar uma tolerância (ex.: 5%).")
@@ -88,7 +118,13 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Tarifas (editáveis)**")
-    preset_vals = PRESETS[preset][tarifa_key]
+    preset_vals = get_tarifas(
+        distribuidora="EMS",
+        vigencia=vigencia,
+        modalidade=modalidade_tarifaria,
+        subgrupo=subgrupo,
+        classe=classe,
+    )
     te_p_default = custo_gmg if sim_gmg else preset_vals["TE_P"]
     te_p = st.number_input("Energia (consumo) PONTA — R$/kWh", 0.0, 5.0,
                          te_p_default, step=0.00001, format="%.5f",
