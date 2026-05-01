@@ -167,9 +167,16 @@ with st.sidebar:
     else:
         calc_ere = st.checkbox("Calcular **ERE simplificada por posto**", value=True,
                                help="No modo resumido, calcula a Energia Reativa Excedente a partir da energia e do fator de potência informados por posto tarifário.")
-        calc_dre = False
+        if modalidade.startswith("Azul"):
+            calc_dre = st.checkbox("Calcular **DRE simplificada por posto**", value=True,
+                                   help="No modo resumido, calcula a Demanda Reativa Excedente a partir da demanda medida, do fator de potência por posto e da demanda faturável apurada pelo app.")
+        else:
+            calc_dre = False
     if resumo_mode:
-        st.info("No modo de valores resumidos por posto, a ERE é calculada por modelo simplificado por posto tarifário. A DRE permanece indisponível nesta fase por depender de dados adicionais.")
+        if modalidade.startswith("Azul"):
+            st.info("No modo de valores resumidos por posto, ERE e DRE usam modelos simplificados por posto tarifário.")
+        else:
+            st.info("No modo de valores resumidos por posto, a ERE é calculada por modelo simplificado por posto tarifário. A DRE permanece indisponível nesta fase para a modalidade Verde.")
 
 # ---------- Helpers ----------
 def _make_initial_profile(ps, pe, perfil_inicial, for_fds=False):
@@ -310,7 +317,10 @@ else:
             resumo_fp_ref = st.number_input("FP de referência", 0.01, 1.0, 0.92, step=0.01, format="%.2f",
                                             help="Usado apenas na ERE simplificada por posto deste modo de entrada.")
 
-        st.info("Neste modo, energia e demanda medida são informadas diretamente por posto tarifário. A ERE usa um modelo simplificado por posto. A DRE permanece indisponível nesta fase por depender de dados adicionais de fator de potência e/ou perfil detalhado.")
+        if modalidade.startswith("Azul"):
+            st.info("Neste modo, energia e demanda medida são informadas diretamente por posto tarifário. ERE e DRE usam modelos simplificados por posto.")
+        else:
+            st.info("Neste modo, energia e demanda medida são informadas diretamente por posto tarifário. A ERE usa um modelo simplificado por posto. A DRE permanece indisponível nesta fase para a modalidade Verde.")
         calc = st.form_submit_button("🚀 Calcular")
 
 if "calc_done" not in st.session_state: st.session_state.calc_done = False
@@ -472,6 +482,14 @@ if calc_dre and not resumo_mode:
         perdas_factor=perdas_factor,
         vr_dre_fallback=td_fp
     )
+elif calc_dre and resumo_mode and modalidade.startswith("Azul"):
+    max_p_adj = dm_p * (resumo_fp_ref / resumo_fp_p)
+    max_fp_adj = dm_fp * (resumo_fp_ref / resumo_fp_fp)
+    dre_p = max(0.0, max_p_adj - daf_p) * vr_dre
+    dre_fp = max(0.0, max_fp_adj - daf_fp) * vr_dre
+    dre_v = 0.0
+    max_v_adj = 0.0
+    adj_u = perfil_u["kW"]; adj_f = perfil_f["kW"]
 else:
     dre_p = dre_fp = dre_v = 0.0
     max_p_adj = max_fp_adj = max_v_adj = 0.0
@@ -545,8 +563,14 @@ else:
                 base["Energia Reativa Excedente — ERE (kVArh eq.)"] = round(ere_kwh,3)
                 base["Energia Reativa Excedente — ERE (R$)"] = RS(c_ere)
         if calc_dre:
-            base["Demanda Reativa Excedente — DRE (PONTA/FORA) (R$)"] = (RS(dre_p), RS(dre_fp))
-            base["Max kW ajustado P/FP (0,92)"] = (round(max_p_adj,3), round(max_fp_adj,3))
+            if resumo_mode:
+                base["DRE simplificada por posto — DRE PONTA (R$)"] = RS(dre_p)
+                base["DRE simplificada por posto — DRE FORA (R$)"] = RS(dre_fp)
+                base["DRE simplificada por posto — DRE total (R$)"] = RS(dre_p + dre_fp)
+                base["DRE simplificada por posto — kW ajustado P/FP"] = (round(max_p_adj,3), round(max_fp_adj,3))
+            else:
+                base["Demanda Reativa Excedente — DRE (PONTA/FORA) (R$)"] = (RS(dre_p), RS(dre_fp))
+                base["Max kW ajustado P/FP (0,92)"] = (round(max_p_adj,3), round(max_fp_adj,3))
     base["Subtotal (R$)"] = RS(subtotal_sem)
     base["Subtotal (com reativo) (R$)"] = RS(subtotal_com)
     base["Conta sem reativo (R$)"] = RS(conta_sem)
@@ -607,6 +631,11 @@ if st.session_state.calc_done:
                 st.latex(rf"FP_{{FP}}={latex_num(resumo_fp_fp)}\geq FP_{{ref}}={latex_num(resumo_fp_ref)} \Rightarrow ERE_{{FP}} = 0")
             st.latex(rf"ERE_{{total}} = {latex_num(ere_p)} + {latex_num(ere_fp)} = {latex_num(ere_kwh)}")
             st.latex(rf"Custo_{{ERE}} = {latex_num(ere_kwh)}\cdot {latex_num(vr_ere)} = {latex_num(c_ere)}")
+    if resumo_mode and calc_dre and modalidade.startswith("Azul"):
+        with st.expander("🔍 Passo-a-passo — DRE simplificada por posto"):
+            st.latex(rf"DRE_P = \max(0, {latex_num(dm_p)}\cdot\frac{{{latex_num(resumo_fp_ref)}}}{{{latex_num(resumo_fp_p)}}} - {latex_num(daf_p)})\cdot {latex_num(vr_dre)} = {latex_num(dre_p)}")
+            st.latex(rf"DRE_{{FP}} = \max(0, {latex_num(dm_fp)}\cdot\frac{{{latex_num(resumo_fp_ref)}}}{{{latex_num(resumo_fp_fp)}}} - {latex_num(daf_fp)})\cdot {latex_num(vr_dre)} = {latex_num(dre_fp)}")
+            st.latex(rf"DRE_{{total}} = {latex_num(dre_p)} + {latex_num(dre_fp)} = {latex_num(dre_p + dre_fp)}")
 
     with st.expander("🔍 Passo-a-passo — Ultrapassagem / Energia / Impostos"):
         if modalidade.startswith("Azul"):
