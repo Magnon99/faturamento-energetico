@@ -8,7 +8,7 @@ import os, shutil, subprocess
 from src.faturamento.calculos import dm_measured, dre_calc, ere_calc, monthly_energy
 from src.faturamento.formatacao import RS, latex_num
 from src.faturamento.perfis import _center_in_window, _fmt_h, apply_interval_values, copy_profile_values, default_profile, empty_profile, hour_overlap, hour_overlap_frac
-from src.faturamento.tarifas import TARIFAS, get_tarifas
+from src.faturamento.tarifas import TARIFAS, get_bandeiras, get_tarifas
 
 # ====================================================
 #  Aplicação de Faturamento de Energia Elétrica
@@ -127,6 +127,67 @@ with st.sidebar:
     icms   = st.number_input("ICMS (%)", 0.0, 40.0, 17.0, step=0.1)
     ignorar_tributos = st.checkbox("Desprezar ICMS, PIS e COFINS (conta = subtotal)", value=False,
                                    help="Use para itens que pedem 'despreze os impostos'.")
+
+    st.markdown("---")
+    st.write("**Bandeira Tarifária**")
+    st.caption("Cada bloco representa uma bandeira com seu consumo associado em kWh.")
+    st.caption("Se houver apenas uma bandeira no período, preencha apenas um bloco e deixe os demais zerados.")
+    st.caption("A soma dos blocos corresponde ao custo total das bandeiras aplicadas ao período faturado.")
+    bandeiras_vigencia = get_bandeiras(distribuidora="EMS", vigencia=vigencia)
+    opcoes_bandeira = list(bandeiras_vigencia.keys())
+    aplicar_impostos_bandeira = st.checkbox(
+        "Aplicar impostos sobre a bandeira",
+        value=True,
+        help="Se desmarcado, o custo total da bandeira é adicionado após o gross-up, fora da base de impostos.",
+    )
+    bandeira_blocos = []
+    for idx in range(3):
+        st.caption(f"Bloco {idx + 1}")
+        b_col1, b_col2 = st.columns(2)
+        with b_col1:
+            bloco_bandeira = st.selectbox(
+                f"Tipo de bandeira — bloco {idx + 1}",
+                opcoes_bandeira,
+                index=(opcoes_bandeira.index("Verde") if "Verde" in opcoes_bandeira else 0),
+                key=f"bandeira_tipo_{idx}",
+            )
+        with b_col2:
+            bloco_kwh = st.number_input(
+                f"Consumo associado (kWh) — bloco {idx + 1}",
+                0.0,
+                100000000.0,
+                0.0,
+                step=1.0,
+                key=f"bandeira_kwh_{idx}",
+            )
+        bandeira_blocos.append(
+            {
+                "tipo": bloco_bandeira,
+                "kwh": float(bloco_kwh),
+                "tarifa": bandeiras_vigencia[bloco_bandeira]["adicional_r_kwh"],
+            }
+        )
+
+    st.markdown("---")
+    st.write("**Componentes Extras Manuais**")
+    cip = st.number_input(
+        "Contribuição de iluminação pública / CIP (R$)",
+        0.0,
+        100000000.0,
+        0.0,
+        step=0.01,
+        format="%.2f",
+        help="Valor opcional somado apenas ao final da conta.",
+    )
+    bonus_credito = st.number_input(
+        "Bônus / crédito / ajuste manual (R$)",
+        0.0,
+        100000000.0,
+        0.0,
+        step=0.01,
+        format="%.2f",
+        help="Valor opcional subtraído apenas ao final da conta.",
+    )
 
     st.divider()
     st.markdown("**Tarifas (editáveis)**")
@@ -422,9 +483,11 @@ else:
     resumo_fp_p = resumo_fp_fp = resumo_fp_ref = 0.92
 c_te_p, c_te_fp = (kwh_p*(custo_gmg if sim_gmg else te_p)), (kwh_fp*te_fp)
 c_bdv = (kwh_p+kwh_fp)*bdv
+c_bandeira = sum(bloco["kwh"] * bloco["tarifa"] for bloco in bandeira_blocos)
 eP   = c_te_p  if calc_dem_ener else 0.0
 eFP  = c_te_fp if calc_dem_ener else 0.0
 bdvC = c_bdv   if calc_dem_ener else 0.0
+bandeiraC = c_bandeira if calc_dem_ener else 0.0
 
 # DAF (sem tolerância, por regra)
 if modalidade.startswith("Azul"):
@@ -497,16 +560,24 @@ else:
 
 # Subtotais
 if modalidade.startswith("Azul"):
-    subtotal_sem = eP + eFP + dem_p + dem_fp + ultra_p + ultra_fp + bdvC
-    subtotal_com = subtotal_sem + c_ere + (dre_p + dre_fp)
+    subtotal_sem_core = eP + eFP + dem_p + dem_fp + ultra_p + ultra_fp + bdvC
+    subtotal_com_core = subtotal_sem_core + c_ere + (dre_p + dre_fp)
 else:
-    subtotal_sem = eP + eFP + dem_verde + ultra_v + bdvC
-    subtotal_com = subtotal_sem + c_ere + dre_v
+    subtotal_sem_core = eP + eFP + dem_verde + ultra_v + bdvC
+    subtotal_com_core = subtotal_sem_core + c_ere + dre_v
+
+subtotal_sem = subtotal_sem_core + bandeiraC
+subtotal_com = subtotal_com_core + bandeiraC
 
 # Tributos (gross-up)
 fator = (pis+cofins+icms)/100.0 if not ignorar_tributos else 0.0
-conta_sem  = subtotal_sem /(1-fator) if (1-fator)>0 else 0.0
-conta_com  = subtotal_com /(1-fator) if (1-fator)>0 else 0.0
+base_tributavel_sem = subtotal_sem if aplicar_impostos_bandeira else subtotal_sem_core
+base_tributavel_com = subtotal_com if aplicar_impostos_bandeira else subtotal_com_core
+parcela_fora_base = 0.0 if aplicar_impostos_bandeira else bandeiraC
+conta_sem  = (base_tributavel_sem /(1-fator) if (1-fator)>0 else 0.0) + parcela_fora_base
+conta_com  = (base_tributavel_com /(1-fator) if (1-fator)>0 else 0.0) + parcela_fora_base
+conta_final_base = conta_sem if not calc_ere and not calc_dre else conta_com
+conta_final_ajustada = conta_final_base + cip - bonus_credito
 
 # ---------- Resultado ----------
 st.markdown(f"#### Resultado — **{modalidade}**")
@@ -514,7 +585,7 @@ if not st.session_state.calc_done:
     st.write({"Energia PONTA (kWh)":0,"Energia FORA (kWh)":0,"Energia PONTA (R$)":RS(0),"Energia FORA (R$)":RS(0),
               "Custo BDV (R$)":RS(0),"DM medida (kW) — ponta|fora|geral":(0,0,0),"DAF PONTA/FORA/Verde (kW)":(0,0),
               "Ultrapassagem (R$)":RS(0),"ERE (kVArh eq.)":0.0,"ERE (R$)":RS(0),"DRE (R$)":RS(0),
-              "Subtotal (R$)":RS(0),"Conta final (R$)":RS(0)})
+              "Subtotal (R$)":RS(0),"Conta final (R$)":RS(0),"CIP (R$)":RS(0),"Bônus / crédito (R$)":RS(0),"Conta final ajustada (R$)":RS(0)})
 else:
     base = {
         "Energia PONTA (kWh)": int(kwh_p),
@@ -525,6 +596,7 @@ else:
             "Energia PONTA (R$)": RS(c_te_p),
             "Energia FORA (R$)": RS(c_te_fp),
             "Custo BDV (R$)": RS(c_bdv),
+            "Custo da bandeira (R$)": RS(c_bandeira),
         })
     if modalidade == "Verde":
         base.update({
@@ -574,7 +646,10 @@ else:
     base["Subtotal (R$)"] = RS(subtotal_sem)
     base["Subtotal (com reativo) (R$)"] = RS(subtotal_com)
     base["Conta sem reativo (R$)"] = RS(conta_sem)
-    base["Conta final (R$)"] = RS(conta_sem if not calc_ere and not calc_dre else conta_com)
+    base["Conta final (R$)"] = RS(conta_final_base)
+    base["CIP (R$)"] = RS(cip)
+    base["Bônus / crédito (R$)"] = RS(bonus_credito)
+    base["Conta final ajustada (R$)"] = RS(conta_final_ajustada)
     st.write(base)
 
 # ---------- Gráficos ----------
@@ -651,10 +726,20 @@ if st.session_state.calc_done:
             else:
                 st.latex(rf"\text{{Se }} {latex_num(dm_g)}>{latex_num(lim_test_v)} \Rightarrow UL={latex_num(dm_g)}-{latex_num(dc_v)};\ \text{{senão }}0.")
         st.latex(rf"E_P={latex_num(kwh_p)},\ E_{{FP}}={latex_num(kwh_fp)},\ BDV=({latex_num(kwh_p)}+{latex_num(kwh_fp)})\cdot {latex_num(bdv)}={latex_num(c_bdv)}")
+        if bandeiraC > 0:
+            for idx, bloco in enumerate(bandeira_blocos, start=1):
+                st.latex(rf"C_{{bandeira,{idx}}}={latex_num(bloco['kwh'])}\cdot {latex_num(bloco['tarifa'])}={latex_num(bloco['kwh'] * bloco['tarifa'])}")
+            st.latex(rf"C_{{bandeira,total}}={latex_num(c_bandeira)}")
+        else:
+            st.markdown("**Bandeira**: sem blocos com consumo associado, custo total igual a zero.")
         if not ignorar_tributos:
-            st.latex(rf"\text{{Conta}}=\dfrac{{Subtotal}}{{1-{latex_num((pis+cofins+icms)/100.0)}}}")
+            if aplicar_impostos_bandeira:
+                st.latex(rf"\text{{Conta}}=\dfrac{{Subtotal}}{{1-{latex_num((pis+cofins+icms)/100.0)}}}")
+            else:
+                st.latex(rf"\text{{Conta}}=\dfrac{{Subtotal-C_{{bandeira,total}}}}{{1-{latex_num((pis+cofins+icms)/100.0)}}}+C_{{bandeira,total}}")
         else:
             st.markdown("**Impostos desprezados** → Conta = Subtotal.")
+        st.markdown(f"**Conta final ajustada** = Conta final + CIP − Bônus/Crédito = {RS(conta_final_base)} + {RS(cip)} − {RS(bonus_credito)} = {RS(conta_final_ajustada)}")
 
 # ---------- Exportar LaTeX/PDF ----------
 def gerar_latex(tex_path):
@@ -662,6 +747,9 @@ def gerar_latex(tex_path):
         if isinstance(x,(int,np.integer)): return f"{int(x)}"
         try: return f"{float(x):.5f}".rstrip('0').rstrip('.')
         except: return str(x)
+    bandeira_desc = "; ".join(
+        [f"Bloco {idx+1}: {bloco['tipo']} ({num(bloco['kwh'])} kWh x {num(bloco['tarifa'])})" for idx, bloco in enumerate(bandeira_blocos)]
+    )
     doc  = r"\documentclass[11pt]{article}\usepackage{amsmath, amssymb, geometry, booktabs}\geometry{margin=1.8cm}\begin{document}"
     doc += r"\section*{Relatório de Cálculo}"
     doc += f"\nModalidade: {modalidade}. Ponta: {ponta_start}-{ponta_end}h. Úteis={dias_uteis}, FDS={dias_fds}.\\\\\n"
@@ -670,9 +758,9 @@ def gerar_latex(tex_path):
     else: doc += f"DC P: {num(dc_p)} kW; DC FP: {num(dc_fp)} kW.\\\\\n"
     doc += f"Tolerância: {'on' if aplica_tol else 'off'}; Regra: {ultra_mode}.\\\\\n"
     doc += f"Tarifas: TE_P={num(te_p)}, TE_FP={num(te_fp)}, TD_P={num(td_p)}, TD_FP={num(td_fp)}, UL_P={num(ul_p)}, UL_FP={num(ul_fp)}.\\\\\n"
-    doc += f"ERE={num(vr_ere)}; DRE={num(vr_dre)}; BDV={num(bdv)}; Tributos: PIS={num(pis)}\\%, COFINS={num(cofins)}\\%, ICMS={num(icms)}\\%.\\\\\n"
+    doc += f"ERE={num(vr_ere)}; DRE={num(vr_dre)}; BDV={num(bdv)}; Bandeiras={bandeira_desc}; Tributar bandeira={'sim' if aplicar_impostos_bandeira else 'não'}; CIP={num(cip)}; Bonus/Credito={num(bonus_credito)}; Tributos: PIS={num(pis)}\\%, COFINS={num(cofins)}\\%, ICMS={num(icms)}\\%.\\\\\n"
     doc += r"\subsection*{Totais}"
-    doc += rf" Subtotal (sem reativo) = {num(subtotal_sem)}; Subtotal (com reativo) = {num(subtotal_com)}; Conta final = {num(conta_com if (calc_ere or calc_dre) else conta_sem)}."
+    doc += rf" Subtotal (sem reativo) = {num(subtotal_sem)}; Subtotal (com reativo) = {num(subtotal_com)}; Conta final = {num(conta_final_base)}; Conta final ajustada = {num(conta_final_ajustada)}."
     doc += r"\end{document}"
     with open(tex_path, "w", encoding="utf-8") as f: f.write(doc)
 
