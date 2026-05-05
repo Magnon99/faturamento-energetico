@@ -162,7 +162,21 @@ with st.sidebar:
     st.caption("Se houver apenas uma bandeira no período, preencha apenas um bloco e deixe os demais zerados.")
     st.caption("A soma dos blocos corresponde ao custo total das bandeiras aplicadas ao período faturado.")
     bandeiras_vigencia = get_bandeiras(distribuidora="EMS", vigencia=vigencia)
-    opcoes_bandeira = list(bandeiras_vigencia.keys())
+    ordem_bandeiras = ["Verde", "Amarela", "Vermelha P1", "Vermelha P2"]
+    opcoes_bandeira = [nome for nome in ordem_bandeiras if nome in bandeiras_vigencia]
+    st.markdown("**Bandeiras editáveis**")
+    st.caption("Os valores abaixo começam com os adicionais oficiais da vigência selecionada, mas podem ser ajustados manualmente.")
+    bandeiras_editaveis = {}
+    for nome_bandeira in opcoes_bandeira:
+        bandeiras_editaveis[nome_bandeira] = st.number_input(
+            f"{nome_bandeira} — R$/kWh",
+            0.0,
+            10.0,
+            float(bandeiras_vigencia[nome_bandeira]["adicional_r_kwh"]),
+            step=0.00001,
+            format="%.5f",
+            key=f"bandeira_editavel_{nome_bandeira}",
+        )
     aplicar_impostos_bandeira = st.checkbox(
         "Aplicar impostos sobre a bandeira",
         value=True,
@@ -192,7 +206,7 @@ with st.sidebar:
             {
                 "tipo": bloco_bandeira,
                 "kwh": float(bloco_kwh),
-                "tarifa": bandeiras_vigencia[bloco_bandeira]["adicional_r_kwh"],
+                "tarifa": bandeiras_editaveis[bloco_bandeira],
             }
         )
 
