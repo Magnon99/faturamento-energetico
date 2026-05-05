@@ -28,7 +28,35 @@ st.caption("Configuração tarifária baseada na estrutura EMS, com suporte a mo
 # ---------- Sidebar ----------
 with st.sidebar:
     st.subheader("⚙️ Parâmetros gerais")
+    cenario_options = ["Nenhum", "Exercício UFMS – Instalações Elétricas II"]
+    cenario_teste = st.selectbox(
+        "Carregar cenário",
+        cenario_options,
+        index=0,
+        key="cenario_teste",
+        help="Carrega um cenário de validação pré-configurado sem executar o cálculo automaticamente.",
+    )
+    cenario_anterior = st.session_state.get("cenario_teste_aplicado", "Nenhum")
+    if cenario_teste != cenario_anterior:
+        st.session_state["input_mode"] = "Curva horária"
+        st.session_state["ponta_start"] = 17.0
+        st.session_state["ponta_end"] = 20.0
+        st.session_state["dias_uteis"] = 22
+        st.session_state["dias_fds"] = 8
+        st.session_state["perfil_mode"] = "Separados (Úteis x FDS)"
+        st.session_state["perfil_inicial"] = "Zerado"
+        st.session_state["cenario_feedback"] = (
+            "Cenário de teste carregado. Clique em calcular para validar."
+            if cenario_teste == "Exercício UFMS – Instalações Elétricas II"
+            else ""
+        )
+        st.session_state.pop("perfil_editor_signature", None)
+        st.session_state["calc_done"] = False
+        st.session_state["cenario_teste_aplicado"] = cenario_teste
+        st.rerun()
+
     input_mode = st.radio("Modo de entrada", ["Curva horária", "Valores resumidos por posto"], index=0,
+                          key="input_mode",
                           help="Selecione se as grandezas de energia e demanda medida serão informadas por curva horária ou por valores consolidados por posto tarifário.")
     resumo_mode = input_mode == "Valores resumidos por posto"
     modalidade = st.selectbox("Modalidade", ["Verde", "Azul (DC único)", "Azul — 2 Contratos"], index=0,
@@ -69,11 +97,11 @@ with st.sidebar:
         st.caption("Para a modalidade Verde nesta vigência, os subgrupos tarifários disponíveis na base atual são os compatíveis cadastrados.")
 
     if not resumo_mode:
-        ponta_start = st.number_input("Início da Ponta (h, aceita .5)", 0.0, 23.5, 17.0, step=0.5, help="Exemplo: 17h30–20h30 corresponde a 17.5 e 20.5.")
-        ponta_end   = st.number_input("Fim da Ponta (h, aceita .5)", 1.0, 24.0, 20.0, step=0.5, help="Ex.: 20.5 significa centro até 20:30.")
-        dias_uteis  = st.number_input("Dias Úteis do mês", 0, 27, 22)
-        dias_fds    = st.number_input("Dias FDS/Feriados do mês", 0, 10, 8)
-        perfil_mode = st.radio("Perfis de carga", ["Único (todo mês)", "Separados (Úteis x FDS)"], index=1,
+        ponta_start = st.number_input("Início da Ponta (h, aceita .5)", 0.0, 23.5, 17.0, step=0.5, key="ponta_start", help="Exemplo: 17h30–20h30 corresponde a 17.5 e 20.5.")
+        ponta_end   = st.number_input("Fim da Ponta (h, aceita .5)", 1.0, 24.0, 20.0, step=0.5, key="ponta_end", help="Ex.: 20.5 significa centro até 20:30.")
+        dias_uteis  = st.number_input("Dias Úteis do mês", 0, 27, 22, key="dias_uteis")
+        dias_fds    = st.number_input("Dias FDS/Feriados do mês", 0, 10, 8, key="dias_fds")
+        perfil_mode = st.radio("Perfis de carga", ["Único (todo mês)", "Separados (Úteis x FDS)"], index=1, key="perfil_mode",
                                help="Use 'Separados' se precisar perfis diferentes entre semana e FDS.")
         st.markdown("---")
         st.write("**Reativo / Fator de Potência** (NDU)")
@@ -246,6 +274,19 @@ def _make_initial_profile(ps, pe, perfil_inicial, for_fds=False):
     return default_profile(ps, pe, for_fds=for_fds)
 
 
+def _make_ufms_profiles(ps, pe):
+    perfil_u = empty_profile(ps, pe, for_fds=False)
+    perfil_u = apply_interval_values(perfil_u, 0, 5, kw=28.0, fp=0.77, tipo_fp="Indutivo")
+    perfil_u = apply_interval_values(perfil_u, 6, 11, kw=138.0, fp=0.93, tipo_fp="Indutivo")
+    perfil_u = apply_interval_values(perfil_u, 12, 17, kw=215.0, fp=0.72, tipo_fp="Indutivo")
+    perfil_u = apply_interval_values(perfil_u, 18, 23, kw=52.0, fp=0.88, tipo_fp="Capacitivo")
+
+    perfil_f = empty_profile(ps, pe, for_fds=True)
+    perfil_f = apply_interval_values(perfil_f, 6, 17, kw=13.0, fp=0.65, tipo_fp="Capacitivo")
+    perfil_f = apply_interval_values(perfil_f, 18, 5, kw=26.0, fp=0.83, tipo_fp="Capacitivo")
+    return perfil_u, perfil_f
+
+
 def plot_barras(df, titulo, dc_lines=None):
     fig, ax = plt.subplots(figsize=(10.2,4.6))
     x = np.arange(24); ax.bar(x, df["kW"]); ax.set_xlim(-0.5, 23.5)
@@ -267,12 +308,15 @@ def plot_barras(df, titulo, dc_lines=None):
 # ---------- Formulário com tabelas ----------
 if not resumo_mode:
     st.markdown("#### Configuração dos Perfis")
-    perfil_inicial = st.radio("Perfil inicial", ["Zerado", "Padrão"], index=1,
+    perfil_inicial = st.radio("Perfil inicial", ["Zerado", "Padrão"], index=1, key="perfil_inicial",
                               help="Escolha se as tabelas devem iniciar zeradas ou com o perfil padrão do app.")
 
-    perfil_editor_signature = (input_mode, perfil_mode, perfil_inicial, ponta_start, ponta_end)
+    perfil_editor_signature = (input_mode, perfil_mode, perfil_inicial, ponta_start, ponta_end, cenario_teste)
     if st.session_state.get("perfil_editor_signature") != perfil_editor_signature:
-        if perfil_mode == "Único (todo mês)":
+        if cenario_teste == "Exercício UFMS – Instalações Elétricas II":
+            st.session_state.perfil_u_edit, st.session_state.perfil_f_edit = _make_ufms_profiles(ponta_start, ponta_end)
+            st.session_state.pop("perfil_all", None)
+        elif perfil_mode == "Único (todo mês)":
             st.session_state.perfil_all = _make_initial_profile(ponta_start, ponta_end, perfil_inicial, for_fds=False)
             st.session_state.pop("perfil_u_edit", None)
             st.session_state.pop("perfil_f_edit", None)
@@ -465,6 +509,9 @@ if resumo_mode:
     st.info(f"**Modalidade:** {modalidade} — **Modo de entrada:** {input_mode}. A energia e a demanda medida são informadas diretamente por posto tarifário. A ERE usa modelo simplificado por posto quando habilitada.")
 else:
     st.info(f"**Modalidade:** {modalidade} — Ponta **{_fmt_h(ponta_start)}–{_fmt_h(ponta_end)}** (úteis). FDS = sempre FP. Perfis: **{perfil_mode}**.")
+
+if cenario_teste == "Exercício UFMS – Instalações Elétricas II":
+    st.success("Cenário de teste carregado. Clique em calcular para validar.")
 
 # ---------- Cálculos principais ----------
 if resumo_mode and st.session_state.calc_done:
