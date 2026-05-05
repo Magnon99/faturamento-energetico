@@ -579,78 +579,223 @@ conta_com  = (base_tributavel_com /(1-fator) if (1-fator)>0 else 0.0) + parcela_
 conta_final_base = conta_sem if not calc_ere and not calc_dre else conta_com
 conta_final_ajustada = conta_final_base + cip - bonus_credito
 
+
+def _result_rows_to_df(rows):
+    normalized = []
+    for label, value in rows:
+        normalized.append((str(label), str(value)))
+    return pd.DataFrame(normalized, columns=["Parâmetro", "Valor"])
+
+
 # ---------- Resultado ----------
 st.markdown(f"#### Resultado — **{modalidade}**")
 if not st.session_state.calc_done:
-    st.write({"Energia PONTA (kWh)":0,"Energia FORA (kWh)":0,"Energia PONTA (R$)":RS(0),"Energia FORA (R$)":RS(0),
-              "Custo BDV (R$)":RS(0),"DM medida (kW) — ponta|fora|geral":(0,0,0),"DAF PONTA/FORA/Verde (kW)":(0,0),
-              "Ultrapassagem (R$)":RS(0),"ERE (kVArh eq.)":0.0,"ERE (R$)":RS(0),"DRE (R$)":RS(0),
-              "Subtotal (R$)":RS(0),"Conta final (R$)":RS(0),"CIP (R$)":RS(0),"Bônus / crédito (R$)":RS(0),"Conta final ajustada (R$)":RS(0)})
+    resumo_rows = [
+        ("Energia total (kWh)", 0),
+        ("Energia na ponta (kWh)", 0),
+        ("Energia fora de ponta (kWh)", 0),
+    ]
+    faturamento_rows = [
+        ("Energia na ponta (R$)", RS(0)),
+        ("Energia fora de ponta (R$)", RS(0)),
+        ("Custo BDV (R$)", RS(0)),
+        ("Custo da bandeira (R$)", RS(0)),
+        ("Subtotal (R$)", RS(0)),
+        ("ERE (R$)", RS(0)),
+        ("DRE (R$)", RS(0)),
+        ("Subtotal com reativo (R$)", RS(0)),
+        ("Conta sem reativo (R$)", RS(0)),
+        ("Conta final (R$)", RS(0)),
+        ("CIP (R$)", RS(0)),
+        ("Bônus / crédito (R$)", RS(0)),
+        ("Conta final ajustada (R$)", RS(0)),
+    ]
+    dados_tecnicos_rows = [
+        ("Potência máxima na ponta (kW)", 0),
+        ("Potência máxima fora de ponta (kW)", 0),
+        ("Demanda medida (kW)", 0),
+        ("Demanda faturável (kW)", 0),
+    ]
+    reativo_rows = [
+        ("ERE (kVArh eq.)", 0),
+        ("ERE (R$)", RS(0)),
+        ("DRE (R$)", RS(0)),
+    ]
+    configuracoes_rows = [
+        ("Impostos", "Desligado" if ignorar_tributos else "Ligado"),
+        ("ERE", "Ligado" if calc_ere else "Desligado"),
+        ("DRE", "Ligado" if calc_dre else "Desligado"),
+        ("Bandeiras aplicadas", "Não informadas"),
+        ("CIP (R$)", RS(cip)),
+        ("Bônus / crédito (R$)", RS(bonus_credito)),
+    ]
 else:
-    base = {
-        "Energia PONTA (kWh)": int(kwh_p),
-        "Energia FORA (kWh)": int(kwh_fp),
-    }
+    energia_total = int(kwh_p + kwh_fp)
+    dre_total_rs = dre_v if modalidade == "Verde" else (dre_p + dre_fp)
+
+    resumo_rows = [
+        ("Energia total (kWh)", energia_total),
+        ("Energia na ponta (kWh)", int(kwh_p)),
+        ("Energia fora de ponta (kWh)", int(kwh_fp)),
+    ]
+
+    faturamento_rows = []
     if calc_dem_ener:
-        base.update({
-            "Energia PONTA (R$)": RS(c_te_p),
-            "Energia FORA (R$)": RS(c_te_fp),
-            "Custo BDV (R$)": RS(c_bdv),
-            "Custo da bandeira (R$)": RS(c_bandeira),
-        })
+        faturamento_rows.extend(
+            [
+                ("Energia na ponta (R$)", RS(c_te_p)),
+                ("Energia fora de ponta (R$)", RS(c_te_fp)),
+                ("Custo BDV (R$)", RS(c_bdv)),
+                ("Custo da bandeira (R$)", RS(c_bandeira)),
+            ]
+        )
     if modalidade == "Verde":
-        base.update({
-            "DM medida (kW) — geral": dm_g,
-            "DAF Verde (kW)": (daf_v if calc_dem_ener else max(dm_g,dc_v)),
-        })
-        if calc_ultra: base["Ultrapassagem Verde (R$)"] = RS(ultra_v)
-        if calc_ere:
-            if resumo_mode:
-                base["ERE simplificada por posto — ERE PONTA (kVArh eq.)"] = round(ere_p,3)
-                base["ERE simplificada por posto — ERE FORA (kVArh eq.)"] = round(ere_fp,3)
-                base["ERE simplificada por posto — ERE total (kVArh eq.)"] = round(ere_kwh,3)
-                base["ERE simplificada por posto — ERE (R$)"] = RS(c_ere)
-            else:
-                base["Energia Reativa Excedente — ERE (kVArh eq.)"] = round(ere_kwh,3)
-                base["Energia Reativa Excedente — ERE (R$)"] = RS(c_ere)
-        if calc_dre: base["Demanda Reativa Excedente — DRE (Verde) (R$)"] = RS(dre_v)
-    else:
-        base.update({
-            "DM medida (kW) — ponta|fora|geral": (dm_p, dm_fp, dm_g),
-            "DAF PONTA/FORA (kW)": (daf_p if calc_dem_ener else max(dm_p,dc_p), daf_fp if calc_dem_ener else max(dm_fp,dc_fp)),
-        })
-        if calc_dem_ener:
-            base[f"Demanda PONTA (R$)"] = RS(dem_p)
-            base[f"Demanda FORA (R$)"] = RS(dem_fp)
+        faturamento_rows.append(("Demanda faturada verde (R$)", RS(dem_verde)))
         if calc_ultra:
-            base["Ultrapassagem PONTA (R$)"] = RS(ultra_p)
-            base["Ultrapassagem FORA (R$)"] = RS(ultra_fp)
+            faturamento_rows.append(("Ultrapassagem verde (R$)", RS(ultra_v)))
+
+        dados_tecnicos_rows = [
+            ("Potência máxima na ponta (kW)", dm_p),
+            ("Potência máxima fora de ponta (kW)", dm_fp),
+            ("Demanda medida (kW)", dm_g),
+            ("Demanda faturável (kW)", (daf_v if calc_dem_ener else max(dm_g, dc_v))),
+        ]
+
+        reativo_rows = []
         if calc_ere:
             if resumo_mode:
-                base["ERE simplificada por posto — ERE PONTA (kVArh eq.)"] = round(ere_p,3)
-                base["ERE simplificada por posto — ERE FORA (kVArh eq.)"] = round(ere_fp,3)
-                base["ERE simplificada por posto — ERE total (kVArh eq.)"] = round(ere_kwh,3)
-                base["ERE simplificada por posto — ERE (R$)"] = RS(c_ere)
+                reativo_rows.extend(
+                    [
+                        ("ERE simplificada na ponta (kVArh eq.)", round(ere_p, 3)),
+                        ("ERE simplificada fora de ponta (kVArh eq.)", round(ere_fp, 3)),
+                        ("ERE simplificada total (kVArh eq.)", round(ere_kwh, 3)),
+                        ("ERE simplificada (R$)", RS(c_ere)),
+                    ]
+                )
             else:
-                base["Energia Reativa Excedente — ERE (kVArh eq.)"] = round(ere_kwh,3)
-                base["Energia Reativa Excedente — ERE (R$)"] = RS(c_ere)
+                reativo_rows.extend(
+                    [
+                        ("ERE (kVArh eq.)", round(ere_kwh, 3)),
+                        ("ERE (R$)", RS(c_ere)),
+                    ]
+                )
+        else:
+            reativo_rows.extend(
+                [
+                    ("ERE (kVArh eq.)", 0.0),
+                    ("ERE (R$)", RS(0)),
+                ]
+            )
+        reativo_rows.append(("DRE (R$)", RS(dre_v if calc_dre else 0.0)))
+    else:
+        if calc_dem_ener:
+            faturamento_rows.extend(
+                [
+                    ("Demanda faturada na ponta (R$)", RS(dem_p)),
+                    ("Demanda faturada fora de ponta (R$)", RS(dem_fp)),
+                ]
+            )
+        if calc_ultra:
+            faturamento_rows.extend(
+                [
+                    ("Ultrapassagem na ponta (R$)", RS(ultra_p)),
+                    ("Ultrapassagem fora de ponta (R$)", RS(ultra_fp)),
+                ]
+            )
+
+        dados_tecnicos_rows = [
+            ("Potência máxima na ponta (kW)", dm_p),
+            ("Potência máxima fora de ponta (kW)", dm_fp),
+            ("Demanda medida (kW)", f"P={dm_p} | FP={dm_fp} | Geral={dm_g}"),
+            ("Demanda faturável (kW)", f"P={daf_p if calc_dem_ener else max(dm_p, dc_p)} | FP={daf_fp if calc_dem_ener else max(dm_fp, dc_fp)}"),
+        ]
+
+        reativo_rows = []
+        if calc_ere:
+            if resumo_mode:
+                reativo_rows.extend(
+                    [
+                        ("ERE simplificada na ponta (kVArh eq.)", round(ere_p, 3)),
+                        ("ERE simplificada fora de ponta (kVArh eq.)", round(ere_fp, 3)),
+                        ("ERE simplificada total (kVArh eq.)", round(ere_kwh, 3)),
+                        ("ERE simplificada (R$)", RS(c_ere)),
+                    ]
+                )
+            else:
+                reativo_rows.extend(
+                    [
+                        ("ERE (kVArh eq.)", round(ere_kwh, 3)),
+                        ("ERE (R$)", RS(c_ere)),
+                    ]
+                )
+        else:
+            reativo_rows.extend(
+                [
+                    ("ERE (kVArh eq.)", 0.0),
+                    ("ERE (R$)", RS(0)),
+                ]
+            )
         if calc_dre:
             if resumo_mode:
-                base["DRE simplificada por posto — DRE PONTA (R$)"] = RS(dre_p)
-                base["DRE simplificada por posto — DRE FORA (R$)"] = RS(dre_fp)
-                base["DRE simplificada por posto — DRE total (R$)"] = RS(dre_p + dre_fp)
-                base["DRE simplificada por posto — kW ajustado P/FP"] = (round(max_p_adj,3), round(max_fp_adj,3))
+                reativo_rows.extend(
+                    [
+                        ("DRE simplificada na ponta (R$)", RS(dre_p)),
+                        ("DRE simplificada fora de ponta (R$)", RS(dre_fp)),
+                        ("DRE simplificada total (R$)", RS(dre_p + dre_fp)),
+                        ("kW ajustado para DRE (P/FP)", f"P={round(max_p_adj,3)} | FP={round(max_fp_adj,3)}"),
+                    ]
+                )
             else:
-                base["Demanda Reativa Excedente — DRE (PONTA/FORA) (R$)"] = (RS(dre_p), RS(dre_fp))
-                base["Max kW ajustado P/FP (0,92)"] = (round(max_p_adj,3), round(max_fp_adj,3))
-    base["Subtotal (R$)"] = RS(subtotal_sem)
-    base["Subtotal (com reativo) (R$)"] = RS(subtotal_com)
-    base["Conta sem reativo (R$)"] = RS(conta_sem)
-    base["Conta final (R$)"] = RS(conta_final_base)
-    base["CIP (R$)"] = RS(cip)
-    base["Bônus / crédito (R$)"] = RS(bonus_credito)
-    base["Conta final ajustada (R$)"] = RS(conta_final_ajustada)
-    st.write(base)
+                reativo_rows.extend(
+                    [
+                        ("DRE na ponta (R$)", RS(dre_p)),
+                        ("DRE fora de ponta (R$)", RS(dre_fp)),
+                        ("DRE total (R$)", RS(dre_p + dre_fp)),
+                        ("kW ajustado para DRE (P/FP)", f"P={round(max_p_adj,3)} | FP={round(max_fp_adj,3)}"),
+                    ]
+                )
+        else:
+            reativo_rows.append(("DRE (R$)", RS(0)))
+
+    faturamento_rows.extend(
+        [
+            ("Subtotal (R$)", RS(subtotal_sem)),
+            ("ERE (R$)", RS(c_ere if calc_ere else 0.0)),
+            ("DRE (R$)", RS(dre_total_rs if calc_dre else 0.0)),
+            ("Subtotal com reativo (R$)", RS(subtotal_com)),
+            ("Conta sem reativo (R$)", RS(conta_sem)),
+            ("Conta final (R$)", RS(conta_final_base)),
+            ("CIP (R$)", RS(cip)),
+            ("Bônus / crédito (R$)", RS(bonus_credito)),
+            ("Conta final ajustada (R$)", RS(conta_final_ajustada)),
+        ]
+    )
+
+    blocos_bandeira = [f"{bloco['tipo']} ({bloco['kwh']:.0f} kWh)" for bloco in bandeira_blocos if bloco["kwh"] > 0]
+    configuracoes_rows = [
+        ("Impostos", "Desligado" if ignorar_tributos else "Ligado"),
+        ("ERE", "Ligado" if calc_ere else "Desligado"),
+        ("DRE", "Ligado" if calc_dre else "Desligado"),
+        ("Bandeira aplicada", " + ".join(blocos_bandeira) if blocos_bandeira else "Verde / sem consumo associado"),
+        ("Tributação da bandeira", "Dentro da base" if aplicar_impostos_bandeira else "Fora da base"),
+        ("CIP (R$)", RS(cip)),
+        ("Bônus / crédito (R$)", RS(bonus_credito)),
+    ]
+
+bloco_1, bloco_2 = st.columns(2, gap="large")
+with bloco_1:
+    st.markdown("##### Resumo do Faturamento")
+    st.dataframe(_result_rows_to_df(resumo_rows), use_container_width=True, hide_index=True)
+    st.markdown("##### Dados Técnicos")
+    st.dataframe(_result_rows_to_df(dados_tecnicos_rows), use_container_width=True, hide_index=True)
+    st.markdown("##### Configurações Aplicadas")
+    st.dataframe(_result_rows_to_df(configuracoes_rows), use_container_width=True, hide_index=True)
+
+with bloco_2:
+    st.markdown("##### Faturamento")
+    st.dataframe(_result_rows_to_df(faturamento_rows), use_container_width=True, hide_index=True)
+    st.markdown("##### Reativo")
+    st.dataframe(_result_rows_to_df(reativo_rows), use_container_width=True, hide_index=True)
 
 # ---------- Gráficos ----------
 if st.session_state.calc_done and not resumo_mode:
